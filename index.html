@@ -470,6 +470,7 @@ function salvaProgresso(){
         name: g.name,
         locked: !!g.locked,
         note: g.note || '',
+        fileScaricato: !!g.fileScaricato,
         photos: g.photos.map(p => ({ id: p.id, filename: p.filename, status: p.status }))
       })),
       results
@@ -488,6 +489,7 @@ function applicaSnapshot(salvato){
     name: g.name,
     locked: !!g.locked,
     note: g.note || '',
+    fileScaricato: !!g.fileScaricato,
     photos: g.photos.map(p => ({ id: p.id, filename: p.filename, status: p.status, rows: null, error: null, mime: 'image/jpeg', dataUrl: null }))
   }));
   results = salvato.results || {};
@@ -527,6 +529,7 @@ document.getElementById('exportProgressBtn').addEventListener('click', () => {
       name: g.name,
       locked: !!g.locked,
       note: g.note || '',
+      fileScaricato: !!g.fileScaricato,
       photos: g.photos.map(p => ({ id: p.id, filename: p.filename, status: p.status }))
     })),
     results
@@ -578,7 +581,7 @@ document.getElementById('importProgressInput').addEventListener('change', (e) =>
 const GRUPPI_REFERENCE = [
   ["00","FITTIZIO"],["02","VITERIA PITONERIA"],["03","FERRAMENTA TRADIZIONALE"],
   ["04",'ACC PER INFISSI "A-L"'],["05",'ACC PER INFISSI "M-Z"'],
-  ["06","CATENAME"],["07","CAVI FUNI TRANTI"],["08","ACC CAVI FUNI"],
+  ["06","CATENAME"],["07","CAVI FUNI TIRANTI"],["08","ACC CAVI FUNI"],
   ["09","CORDAME"],["10","MISURAZIONE E PESI"],["11",'ZOOTECNIA "A-P"'],
   ["12",'ZOOTECNIA "Q-Z"'],["13","RUBINETTERIA"],
   ["14","UTENSILI ED ATTREZZI A MANO"],["15",'UTENSILI MECCANICI "A-L"'],
@@ -604,7 +607,7 @@ const GRUPPI_REFERENCE = [
   ["80","GARDEN ATTREZZI"],["81","GARDEN MOBILI E GRILL"],
   ["82","GARDEN GRILL & SIMILI"],["85","ATTREZZATURA ANTINFORTUNISTICA"],
   ["86","SEGNALETICA STRADALE/AZIENDALE"],["89","ARTICOLI VENDUTI E REINTEGRO"],
-  ["90","RICAMBI VARI (TUTTI)"]
+  ["99","RICAMBI VARI (TUTTI)"]
 ];
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -651,7 +654,7 @@ function addGroupFromInput(){
   const input = document.getElementById('newGroupName');
   const name = input.value.trim();
   if (!name) return;
-  groups.push({ id: uid(), name, photos: [], locked: false, note: '' });
+  groups.push({ id: uid(), name, photos: [], locked: false, note: '', fileScaricato: false });
   input.value = '';
   renderGroups();
 }
@@ -765,6 +768,19 @@ function renderGroups(){
     noteInput.addEventListener('input', e => { group.note = e.target.value; });
     noteInput.addEventListener('blur', () => salvaProgresso());
     card.appendChild(noteInput);
+
+    const righeGruppo = results[group.id];
+    if (righeGruppo && righeGruppo.length){
+      const fileBtn = document.createElement('button');
+      fileBtn.type = 'button';
+      fileBtn.className = 'btn btn-ghost';
+      fileBtn.style.cssText = 'width:100%;margin-bottom:10px;font-size:13px;' + (group.fileScaricato ? 'border-color:#bfe3cd;color:var(--success);background:var(--success-soft);' : '');
+      fileBtn.textContent = group.fileScaricato
+        ? `✅ File scaricato (${righeGruppo.length} righe) — scarica di nuovo`
+        : `📄 Scarica file di questo gruppo (${righeGruppo.length} righe)`;
+      fileBtn.addEventListener('click', () => scaricaFileGruppo(group.id));
+      card.appendChild(fileBtn);
+    }
 
     if (group.locked){
       const infoBlocco = document.createElement('p');
@@ -1287,19 +1303,23 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
   scaricaXls('Sottogruppi_Odoo_Finale.xls', sheetsXml);
 });
 
-document.getElementById('downloadGroupBtn').addEventListener('click', () => {
-  const group = groups.find(g => g.id === activeTab);
-  if (!group){ alert('Nessun gruppo selezionato'); return; }
+function scaricaFileGruppo(groupId){
+  const group = groups.find(g => g.id === groupId);
+  if (!group){ alert('Gruppo non trovato'); return; }
   const rows = results[group.id];
   if (!rows || !rows.length){ alert('Questo gruppo non ha ancora dati estratti'); return; }
   const aoa = [['Codice','Descrizione'], ...rows.map(r => [r.codice, r.descrizione])];
   const sheetsXml = buildSheetXml(group.name, aoa);
   const nomeFile = (group.name.replace(/[\\/?*\[\]:]/g, '-') || 'gruppo') + '.xls';
   scaricaXls(nomeFile, sheetsXml);
-  if (!group.locked){
-    group.locked = true;
-    renderGroups();
-  }
+  group.fileScaricato = true;
+  if (!group.locked) group.locked = true;
+  renderGroups();
+}
+
+document.getElementById('downloadGroupBtn').addEventListener('click', () => {
+  if (!activeTab){ alert('Nessun gruppo selezionato'); return; }
+  scaricaFileGruppo(activeTab);
 });
 
 proponiRipresa();
