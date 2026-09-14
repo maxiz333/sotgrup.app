@@ -379,12 +379,9 @@
 
   <!-- STEP 1: API KEY -->
   <div class="card">
-    <h2>🔑 Chiave API Gemini</h2>
-    <p class="sub">La trovi su aistudio.google.com/app/apikey</p>
-    <div class="key-row">
-      <input type="password" id="apiKey" placeholder="Incolla qui la tua chiave...">
-      <button class="icon-btn" id="toggleKey" type="button">👁️</button>
-    </div>
+    <h2>🔑 Chiavi API Gemini</h2>
+    <p class="sub">La trovi su aistudio.google.com/app/apikey — una per riga se ne hai più di una: quando la prima finisce la quota gratuita, passo automaticamente alla successiva</p>
+    <textarea id="apiKeys" placeholder="Incolla qui una o più chiavi, una per riga..." rows="3" style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit;background:#FBFBF9;color:var(--ink);resize:vertical;"></textarea>
   </div>
 
   <!-- STEP 2: GRUPPI -->
@@ -612,11 +609,14 @@ const GRUPPI_REFERENCE = [
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
 
-// ---------- API KEY ----------
-document.getElementById('toggleKey').addEventListener('click', () => {
-  const f = document.getElementById('apiKey');
-  f.type = f.type === 'password' ? 'text' : 'password';
-});
+// ---------- CHIAVI API (una o più, con passaggio automatico) ----------
+let apiKeys = [];
+let chiaveAttiva = 0;
+
+function leggiChiavi(){
+  apiKeys = document.getElementById('apiKeys').value.split('\n').map(s => s.trim()).filter(Boolean);
+  return apiKeys;
+}
 
 // ---------- GRUPPI ----------
 document.getElementById('addGroupBtn').addEventListener('click', addGroupFromInput);
@@ -765,8 +765,7 @@ function renderGroups(){
     noteInput.placeholder = '📝 Nota facoltativa, es. "foto sfocata, da rifare"';
     noteInput.value = group.note || '';
     noteInput.style.cssText = 'margin:-4px 0 10px;font-size:12.5px;padding:6px 10px;';
-    noteInput.addEventListener('input', e => { group.note = e.target.value; });
-    noteInput.addEventListener('blur', () => salvaProgresso());
+    noteInput.addEventListener('input', e => { group.note = e.target.value; salvaProgresso(); });
     card.appendChild(noteInput);
 
     const righeGruppo = results[group.id];
@@ -923,7 +922,8 @@ Niente altro testo, solo il JSON.`;
 const MODELLI_CANDIDATI = ['gemini-3.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 let modelloAttivo = 0;
 
-async function chiamaGeminiParti(apiKey, parts, attempt = 1, onRetry = null, modelIdx = modelloAttivo){
+async function chiamaGeminiParti(parts, attempt = 1, onRetry = null, modelIdx = modelloAttivo, chiaveIdx = chiaveAttiva){
+  const apiKey = apiKeys[chiaveIdx];
   const modello = MODELLI_CANDIDATI[modelIdx];
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modello}:generateContent?key=${apiKey}`;
   const payload = {
@@ -940,21 +940,31 @@ async function chiamaGeminiParti(apiKey, parts, attempt = 1, onRetry = null, mod
     const bodyText = await res.text().catch(() => '');
     const quotaEsaurita = /plan and billing/i.test(bodyText);
     if (quotaEsaurita){
-      throw new Error('Limite gratuito di Gemini raggiunto (15 richieste/minuto o 1.500/giorno) — aspetta un minuto e riprova, oppure attiva la fatturazione su aistudio.google.com per un limite più alto.');
+      if (chiaveIdx < apiKeys.length - 1){
+        chiaveAttiva = chiaveIdx + 1;
+        if (onRetry) onRetry(attempt, 'chiave');
+        return chiamaGeminiParti(parts, 1, onRetry, modelIdx, chiaveAttiva);
+      }
+      throw new Error(`Limite gratuito raggiunto su tutte le ${apiKeys.length} chiavi disponibili (15 richieste/minuto o 1.500/giorno ciascuna) — aspetta un minuto o fino a domani, oppure aggiungine altre.`);
     }
     if (attempt <= 4){
       if (onRetry) onRetry(attempt, res.status);
       await new Promise(r => setTimeout(r, attempt * 8000));
-      return chiamaGeminiParti(apiKey, parts, attempt + 1, onRetry, modelIdx);
+      return chiamaGeminiParti(parts, attempt + 1, onRetry, modelIdx, chiaveIdx);
     }
     throw new Error(`Errore HTTP ${res.status}: ${bodyText.slice(0,150)}`);
   }
   if (res.status === 404 && modelIdx < MODELLI_CANDIDATI.length - 1){
     modelloAttivo = modelIdx + 1; // ricordato per le prossime chiamate, non solo per questa
     if (onRetry) onRetry(attempt, 404);
-    return chiamaGeminiParti(apiKey, parts, 1, onRetry, modelloAttivo);
+    return chiamaGeminiParti(parts, 1, onRetry, modelloAttivo, chiaveIdx);
   }
   if (res.status === 400 || res.status === 403){
+    if (chiaveIdx < apiKeys.length - 1){
+      chiaveAttiva = chiaveIdx + 1;
+      if (onRetry) onRetry(attempt, 'chiave');
+      return chiamaGeminiParti(parts, 1, onRetry, modelIdx, chiaveAttiva);
+    }
     throw new Error('Chiave API non valida o senza permessi — controllala su aistudio.google.com/app/apikey');
   }
   if (!res.ok){
@@ -967,9 +977,9 @@ async function chiamaGeminiParti(apiKey, parts, attempt = 1, onRetry = null, mod
   return JSON.parse(text);
 }
 
-async function callGemini(apiKey, base64, mime, attempt = 1, onRetry = null, modelIdx = modelloAttivo){
+async function callGemini(base64, mime, attempt = 1, onRetry = null, modelIdx = modelloAttivo){
   const parti = [{ text: PROMPT }, { inline_data: { mime_type: mime, data: base64 } }];
-  const parsed = await chiamaGeminiParti(apiKey, parti, attempt, onRetry, modelIdx);
+  const parsed = await chiamaGeminiParti(parti, attempt, onRetry, modelIdx);
   return parsed.sottogruppi || [];
 }
 
@@ -987,13 +997,13 @@ Rispondi SOLO con questo JSON, nient'altro (array vuoto se non trovi problemi):
   {"tipo": "in_piu", "codice_elenco": "09", "descrizione_elenco": "riga nell'elenco che non trovi in nessuna foto"}
 ]}`;
 
-async function verificaGruppo(apiKey, group){
+async function verificaGruppo(group){
   const elenco = (results[group.id] || []).map(r => `${r.codice} — ${r.descrizione}`).join('\n') || '(elenco vuoto)';
   const parti = [{ text: VERIFICA_PROMPT + '\n\nElenco attuale da controllare:\n' + elenco }];
   group.photos.forEach(p => {
     parti.push({ inline_data: { mime_type: p.mime, data: p.dataUrl.split(',')[1] } });
   });
-  const parsed = await chiamaGeminiParti(apiKey, parti);
+  const parsed = await chiamaGeminiParti(parti);
   return parsed.problemi || [];
 }
 
@@ -1039,8 +1049,8 @@ function addProgressItem(groupName, filename){
 }
 
 async function runExtraction(){
-  const apiKey = document.getElementById('apiKey').value.trim();
-  if (!apiKey){ alert('Inserisci prima la chiave API Gemini 🔑'); return; }
+  leggiChiavi();
+  if (!apiKeys.length){ alert('Inserisci almeno una chiave API Gemini 🔑'); return; }
   if (!groups.length || groups.every(g => g.photos.length === 0)){
     alert('Aggiungi almeno un gruppo con delle foto 📷');
     return;
@@ -1077,9 +1087,11 @@ async function runExtraction(){
     }
     const base64 = photo.dataUrl.split(',')[1];
     try {
-      const rows = await callGemini(apiKey, base64, photo.mime, 1, (attempt, status) => {
+      const rows = await callGemini(base64, photo.mime, 1, (attempt, status) => {
         progress.status.textContent = status === 404
           ? '🔁 modello aggiornato automaticamente, ritento...'
+          : status === 'chiave'
+          ? '🔑 chiave esaurita, passo alla successiva...'
           : `🔄 server occupato, ritento (${attempt}/4)...`;
       });
       photo.status = 'done';
@@ -1178,8 +1190,8 @@ function renderTable(groupId){
 
 // ---------- VERIFICA CON L'AI ----------
 document.getElementById('verifyBtn').addEventListener('click', async () => {
-  const apiKey = document.getElementById('apiKey').value.trim();
-  if (!apiKey){ alert('Inserisci prima la chiave API Gemini 🔑'); return; }
+  leggiChiavi();
+  if (!apiKeys.length){ alert('Inserisci almeno una chiave API Gemini 🔑'); return; }
   const group = groups.find(g => g.id === activeTab);
   if (!group){ return; }
   const btn = document.getElementById('verifyBtn');
@@ -1188,7 +1200,7 @@ document.getElementById('verifyBtn').addEventListener('click', async () => {
   btn.textContent = '⏳ Verifica in corso (può richiedere fino a un minuto)...';
   reportHost.innerHTML = '';
   try {
-    const problemi = await verificaGruppo(apiKey, group);
+    const problemi = await verificaGruppo(group);
     renderVerifyReport(group.id, problemi);
   } catch (e) {
     reportHost.innerHTML = `<div class="banner" style="background:var(--danger-soft);border-color:#eec6bd;color:var(--danger);">❌ Verifica non riuscita: ${escapeHtml(e.message)}</div>`;
