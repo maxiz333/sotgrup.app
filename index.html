@@ -448,6 +448,14 @@
     </div>
   </div>
 
+  <!-- STEP 5: CRONOLOGIA -->
+  <div class="card">
+    <h2>📜 Cronologia modifiche (<span id="cronologiaCount">0</span>)</h2>
+    <p class="sub">Ogni riga eliminata o modificata — a mano o dopo una correzione dell'AI — resta qui, con "prima" e "dopo". Non sparisce mai da sola.</p>
+    <div id="cronologiaList"></div>
+    <button class="btn btn-ghost btn-block" id="scaricaCronologiaBtn" type="button" style="margin-top:12px;">📥 Scarica cronologia completa come testo</button>
+  </div>
+
 </div>
 
 <script>
@@ -455,8 +463,52 @@
 let groups = [];        // [{id, name, locked, photos:[{id, filename, mime, dataUrl, status, rows, error}]}]
 let results = {};       // { groupId: [{codice, descrizione}] }
 let activeTab = null;
+let cronologia = [];    // [{id, timestamp, gruppo, azione, prima:{codice,descrizione}|null, dopo:{codice,descrizione}|null}]
+const CRONOLOGIA_MAX = 1000; // limite di sicurezza per non far crescere il salvataggio all'infinito
 
 const CHIAVE_SALVATAGGIO = 'estrattore_sottogruppi_progresso_v1';
+
+function registraCronologia(gruppo, azione, prima, dopo){
+  try {
+    cronologia.unshift({ id: uid(), timestamp: new Date().toISOString(), gruppo, azione, prima, dopo });
+    if (cronologia.length > CRONOLOGIA_MAX) cronologia.length = CRONOLOGIA_MAX;
+    renderCronologia();
+    salvaProgresso();
+  } catch (e) {
+    console.warn('Impossibile registrare la cronologia (la modifica sui dati procede comunque):', e);
+  }
+}
+
+function formattaRigaCronologia(r){
+  return r ? `${r.codice} — ${r.descrizione}` : '(nessuna)';
+}
+
+function renderCronologia(){
+  const countEl = document.getElementById('cronologiaCount');
+  const host = document.getElementById('cronologiaList');
+  if (!countEl || !host) return;
+  countEl.textContent = cronologia.length;
+  if (!cronologia.length){
+    host.innerHTML = '<p class="note">Nessuna modifica o eliminazione registrata finora.</p>';
+    return;
+  }
+  const daMostrare = cronologia.slice(0, 50);
+  host.innerHTML = daMostrare.map(e => {
+    const data = new Date(e.timestamp).toLocaleString('it-IT');
+    const dettaglio = e.prima && e.dopo
+      ? `${escapeHtml(formattaRigaCronologia(e.prima))} → ${escapeHtml(formattaRigaCronologia(e.dopo))}`
+      : e.prima
+      ? `Eliminata: ${escapeHtml(formattaRigaCronologia(e.prima))}`
+      : `Aggiunta: ${escapeHtml(formattaRigaCronologia(e.dopo))}`;
+    return `<div style="padding:8px 0;border-top:1px solid var(--line);font-size:13px;">
+      <div><b>${escapeHtml(e.gruppo)}</b> — ${escapeHtml(e.azione)} <span style="color:var(--ink-soft);font-size:11.5px;">${data}</span></div>
+      <div style="color:var(--ink-soft);margin-top:2px;">${dettaglio}</div>
+    </div>`;
+  }).join('');
+  if (cronologia.length > 50){
+    host.innerHTML += `<p class="note" style="margin-top:8px;">Mostrate le 50 più recenti su ${cronologia.length} totali — scarica il file per vederle tutte.</p>`;
+  }
+}
 
 function salvaProgresso(){
   try {
@@ -470,7 +522,8 @@ function salvaProgresso(){
         fileScaricato: !!g.fileScaricato,
         photos: g.photos.map(p => ({ id: p.id, filename: p.filename, status: p.status }))
       })),
-      results
+      results,
+      cronologia
     };
     localStorage.setItem(CHIAVE_SALVATAGGIO, JSON.stringify(snapshot));
   } catch (e) {
@@ -490,8 +543,10 @@ function applicaSnapshot(salvato){
     photos: g.photos.map(p => ({ id: p.id, filename: p.filename, status: p.status, rows: null, error: null, mime: 'image/jpeg', dataUrl: null }))
   }));
   results = salvato.results || {};
+  cronologia = salvato.cronologia || []; // la cronologia si somma/ripristina, non si perde mai al cambio dispositivo
   renderGroups();
   renderResults();
+  renderCronologia();
 }
 
 function proponiRipresa(){
@@ -529,7 +584,8 @@ document.getElementById('exportProgressBtn').addEventListener('click', () => {
       fileScaricato: !!g.fileScaricato,
       photos: g.photos.map(p => ({ id: p.id, filename: p.filename, status: p.status }))
     })),
-    results
+    results,
+    cronologia
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -1164,6 +1220,8 @@ function renderTable(groupId){
   document.getElementById('verifyReport').innerHTML = '';
   const host = document.getElementById('tableHost');
   const rows = results[groupId] || [];
+  const group = groups.find(g => g.id === groupId);
+  const nomeGruppo = group ? group.name : groupId;
   const table = document.createElement('table');
   table.className = 'res';
   table.innerHTML = `<thead><tr><th>Codice</th><th>Descrizione</th><th></th></tr></thead><tbody></tbody>`;
@@ -1175,9 +1233,37 @@ function renderTable(groupId){
       <td contenteditable="true">${escapeHtml(row.descrizione)}</td>
       <td><button class="row-del" title="Elimina riga">🗑️</button></td>
     `;
-    tr.querySelectorAll('td[contenteditable]')[0].addEventListener('input', e => { row.codice = e.target.textContent.trim(); salvaProgresso(); });
-    tr.querySelectorAll('td[contenteditable]')[1].addEventListener('input', e => { row.descrizione = e.target.textContent.trim(); salvaProgresso(); });
+    const tdCodice = tr.querySelectorAll('td[contenteditable]')[0];
+    const tdDescr = tr.querySelectorAll('td[contenteditable]')[1];
+
+    let codicePrima = null;
+    tdCodice.addEventListener('focus', () => { codicePrima = row.codice; });
+    tdCodice.addEventListener('input', e => { row.codice = e.target.textContent.trim(); salvaProgresso(); });
+    tdCodice.addEventListener('blur', () => {
+      if (codicePrima !== null && codicePrima !== row.codice){
+        registraCronologia(nomeGruppo, 'Codice modificato a mano',
+          { codice: codicePrima, descrizione: row.descrizione },
+          { codice: row.codice, descrizione: row.descrizione });
+      }
+      codicePrima = null;
+    });
+
+    let descrPrima = null;
+    tdDescr.addEventListener('focus', () => { descrPrima = row.descrizione; });
+    tdDescr.addEventListener('input', e => { row.descrizione = e.target.textContent.trim(); salvaProgresso(); });
+    tdDescr.addEventListener('blur', () => {
+      if (descrPrima !== null && descrPrima !== row.descrizione){
+        registraCronologia(nomeGruppo, 'Descrizione modificata a mano',
+          { codice: row.codice, descrizione: descrPrima },
+          { codice: row.codice, descrizione: row.descrizione });
+      }
+      descrPrima = null;
+    });
+
     tr.querySelector('.row-del').addEventListener('click', () => {
+      const confermato = confirm(`Eliminare questa riga?\n\n${row.codice} — ${row.descrizione}\n\nResterà comunque visibile nella cronologia in fondo alla pagina, ma sparirà dall'elenco e dal file Excel.`);
+      if (!confermato) return; // l'utente ha annullato: nessuna modifica ai dati
+      registraCronologia(nomeGruppo, 'Riga eliminata a mano', { codice: row.codice, descrizione: row.descrizione }, null);
       results[groupId].splice(idx, 1);
       renderResults();
     });
@@ -1244,15 +1330,28 @@ function renderVerifyReport(groupId, problemi){
 function applicaCorrezione(groupId, p){
   const rows = results[groupId];
   if (!rows) return;
+  const group = groups.find(g => g.id === groupId);
+  const nomeGruppo = group ? group.name : groupId;
   if (p.tipo === 'errato'){
     const idx = rows.findIndex(r => r.codice === p.codice_elenco && r.descrizione === p.descrizione_elenco);
-    if (idx >= 0) rows[idx] = { codice: p.codice_corretto, descrizione: p.descrizione_corretta };
+    if (idx >= 0){
+      registraCronologia(nomeGruppo, 'Corretta con AI',
+        { codice: p.codice_elenco, descrizione: p.descrizione_elenco },
+        { codice: p.codice_corretto, descrizione: p.descrizione_corretta });
+      rows[idx] = { codice: p.codice_corretto, descrizione: p.descrizione_corretta };
+    }
   } else if (p.tipo === 'mancante'){
+    registraCronologia(nomeGruppo, 'Aggiunta con AI (riga mancante)', null,
+      { codice: p.codice_corretto, descrizione: p.descrizione_corretta });
     rows.push({ codice: p.codice_corretto, descrizione: p.descrizione_corretta });
     rows.sort((a, b) => (parseInt(a.codice) || 0) - (parseInt(b.codice) || 0));
   } else if (p.tipo === 'in_piu'){
     const idx = rows.findIndex(r => r.codice === p.codice_elenco && r.descrizione === p.descrizione_elenco);
-    if (idx >= 0) rows.splice(idx, 1);
+    if (idx >= 0){
+      registraCronologia(nomeGruppo, 'Rimossa con AI (riga di troppo)',
+        { codice: p.codice_elenco, descrizione: p.descrizione_elenco }, null);
+      rows.splice(idx, 1);
+    }
   }
   renderTable(groupId);
 }
@@ -1334,6 +1433,28 @@ document.getElementById('downloadGroupBtn').addEventListener('click', () => {
   scaricaFileGruppo(activeTab);
 });
 
+document.getElementById('scaricaCronologiaBtn').addEventListener('click', () => {
+  if (!cronologia.length){ alert('Non ci sono ancora modifiche o eliminazioni registrate.'); return; }
+  let testo = `CRONOLOGIA MODIFICHE ED ELIMINAZIONI — ${new Date().toLocaleString('it-IT')}\n${'='.repeat(60)}\n\n`;
+  cronologia.forEach(e => {
+    const data = new Date(e.timestamp).toLocaleString('it-IT');
+    testo += `[${data}] ${e.gruppo} — ${e.azione}\n`;
+    if (e.prima) testo += `  Prima: ${formattaRigaCronologia(e.prima)}\n`;
+    if (e.dopo) testo += `  Dopo:  ${formattaRigaCronologia(e.dopo)}\n`;
+    testo += '\n';
+  });
+  const blob = new Blob([testo], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `cronologia_modifiche_${new Date().toISOString().slice(0,10)}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+renderCronologia();
 proponiRipresa();
 </script>
 </body>
